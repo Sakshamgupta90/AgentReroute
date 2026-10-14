@@ -69,3 +69,20 @@ class DataTests(unittest.TestCase):
             self.assertEqual(manifest['domains']['flash']['status'], 'blocked_missing_data')
             self.assertTrue((root/'out/cases.json').is_file())
             self.assertTrue(manifest['corpus_hash'])
+
+    def test_prepare_never_uses_tool_examples_as_schemas(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d)
+            (root/'data/tool_schemas').mkdir(parents=True)
+            (root/'data/tool_schemas/tools_structure.json').write_text('[{"role":"tool","content":"UNRELATED_EXAMPLE"}]')
+            (root/'data/ground_truth').mkdir()
+            (root/'data/tau_retail').mkdir()
+            (root/'data/ground_truth/tau_ground_truth.json').write_text(json.dumps([{'trajectory_id':1,'failures':[{'failure_id':1,'step_number':1,'failure_category':'System Failure'}],'root_cause':{'failure_id':1}}]))
+            (root/'data/tau_retail/tau_dataset_failed.json').write_text('[{"task_id":1,"traj":[{"role":"assistant","content":"timeout"}]}]')
+            prepare_corpus(root,root/'out')
+            manifest=json.loads((root/'out/manifest.json').read_text())
+            self.assertEqual(manifest['tool_schema_source'],'packaged_reference_domain_registry')
+            imported=json.loads((root/'out/cases.json').read_text())
+            self.assertIsInstance(imported[0]['tools'],dict)
+            self.assertIn('tools',imported[0]['tools'])
+            self.assertNotIn('UNRELATED_EXAMPLE', (root/'out/cases.json').read_text())

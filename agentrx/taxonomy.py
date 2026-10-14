@@ -38,9 +38,10 @@ def category(value):
 
 
 def agent(value):
+    value = re.sub(r'^Orchestrator \((?:thought|termination condition|-> [^)]+)\)$', 'Orchestrator', str(value), flags=re.I)
     result = token(value)
     aliases = {'assistantagent': 'assistant', 'websurferagent': 'websurfer',
-               'filesurferagent': 'filesurfer', 'orchestratoragent': 'orchestrator'}
+               'filesurferagent': 'filesurfer', 'orchestratoragent': 'orchestrator', 'human': 'user'}
     return aliases.get(result, result)
 
 

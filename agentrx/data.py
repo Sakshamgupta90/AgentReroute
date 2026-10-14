@@ -2,6 +2,7 @@
 import hashlib
 import json
 import subprocess
+from importlib.resources import files
 from pathlib import Path
 from .io import digest, read_json, write_json
 from .taxonomy import category
@@ -144,8 +145,9 @@ def prepare_corpus(source, output):
     policy = policy_file.read_text(encoding='utf-8') if policy_file.exists() else ''
     if policy_file.exists():
         inventory[str(policy_file.relative_to(base))] = hashlib.sha256(policy_file.read_bytes()).hexdigest()
-    tools_file = base/'tool_schemas/tools_structure.json'
-    tools = load(tools_file) if tools_file.exists() else {}
+    # The release's data/tool_schemas/tools_structure.json contains example
+    # conversations, not schemas. Use the actual domain-registry definitions.
+    tools = json.loads(files('agentrx').joinpath('resources/tools.json').read_text(encoding='utf-8'))
     for domain, label_name in [('tau', 'tau_ground_truth.json'), ('magentic', 'magentic_one_ground_truth.json')]:
         labels_path = base/'ground_truth'/label_name
         if not labels_path.exists():
@@ -170,7 +172,7 @@ def prepare_corpus(source, output):
             if raw is None:
                 exclusions.append({'domain': domain, 'trajectory_id': tid, 'reason': 'missing trace'})
                 continue
-            add(raw, label, domain, tid, policy if domain == 'tau' else '', tools if domain == 'tau' else {})
+            add(raw, label, domain, tid, policy if domain == 'tau' else '', tools.get(domain, {}))
     # Native missing-domain data can be supplied as explicitly normalized cases.
     for domain in ('flash', 'relwork'):
         path = base/f'{domain}_cases.json'
@@ -186,6 +188,8 @@ def prepare_corpus(source, output):
                                      ('available_subset' if ids else 'blocked_missing_data')}
     manifest = {'format_version': 1, 'source_url': REFERENCE_URL, 'source_revision': revision,
                 'reference_revision': REFERENCE_REVISION, 'source_pinned': revision == REFERENCE_REVISION,
+                'tool_schema_source': 'packaged_reference_domain_registry',
+                'tool_schema_hash': digest(tools),
                 'files': inventory, 'domains': domains, 'exclusions': exclusions,
                 'corpus_hash': digest(cases), 'available_total': len(cases), 'paper_total': 170,
                 'measurement_scope': 'available_release_subset'}

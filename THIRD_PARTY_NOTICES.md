@@ -8,6 +8,9 @@ adapted from Microsoft AgentRx `agentrx/judge/judge.py`, commit
 https://github.com/microsoft/AgentRx . Copyright (c) Microsoft Corporation.
 The complete MIT permission notice is included in LICENSE.
 
+`agentrx/resources/tools.json` is adapted from the same revision's
+`agentrx/invariants/domain_registry.py`, under the same MIT license and copyright.
+
 The prepare command imports original trajectories, annotations, retail policy,
 and tool descriptions from the supplied authors' release. These files remain
 under their source licenses; the Hugging Face benchmark declares CC BY 4.0:

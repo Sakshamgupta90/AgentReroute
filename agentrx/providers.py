@@ -56,16 +56,21 @@ class HTTPProvider:
     @classmethod
     def from_config(cls, config):
         kind = config.get('provider', 'openai')
+        if kind not in ('openai', 'openai-compatible', 'azure', 'replay'):
+            raise ProviderError('Unsupported model provider')
         if kind == 'replay':
             return ReplayProvider(config['replay_file'])
         key_env = config.get('api_key_env', 'AZURE_OPENAI_API_KEY' if kind == 'azure' else 'OPENAI_API_KEY')
         key = os.environ.get(key_env)
         if not key:
             raise ProviderError(f'Set {key_env} in your local environment before model-backed runs')
-        base = config.get('base_url') or os.environ.get(
+        if config.get('base_url_env') and not os.environ.get(config['base_url_env']):
+            raise ProviderError(f"Set {config['base_url_env']} to your versioned model endpoint")
+        base = os.environ.get(config.get('base_url_env', '')) or config.get('base_url') or os.environ.get(
             'AZURE_OPENAI_ENDPOINT' if kind == 'azure' else 'OPENAI_BASE_URL',
             '' if kind == 'azure' else 'https://api.openai.com/v1')
-        return cls(config.get('model', 'gpt-5'), base, key, provider=kind,
+        model = os.environ.get(config.get('model_env', '')) or config.get('model', 'gpt-5')
+        return cls(model, base, key, provider=kind,
                    deployment=config.get('deployment') or os.environ.get('AZURE_OPENAI_DEPLOYMENT'),
                    api_version=config.get('api_version', os.environ.get('AZURE_OPENAI_API_VERSION', '2024-10-21')),
                    settings=config.get('settings'), timeout=config.get('timeout', 180),
