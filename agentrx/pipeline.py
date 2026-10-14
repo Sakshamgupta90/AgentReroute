@@ -40,6 +40,8 @@ def validate_prediction(raw, trajectory, require_category=True):
         require_category or raw.get('category') == 'Inconclusive') else None
     index = raw.get('step_index', raw.get('index'))
     role = raw.get('agent', raw.get('failed_agent'))
+    if not require_category and index is None and str(raw.get('custom_category', '')).strip():
+        label = 'Inconclusive'
     if label == 'Inconclusive' and index is None:
         if not str(raw.get('custom_category', '')).strip():
             raise ValueError('Inconclusive prediction needs custom_category')
@@ -48,8 +50,9 @@ def validate_prediction(raw, trajectory, require_category=True):
     step = next((s for s in trajectory['steps'] if s['index'] == index and type(index) is int), None)
     if step is None:
         raise ValueError('Prediction step is absent from trajectory')
-    if not isinstance(role, str) or not role.strip() or agent(role) not in {agent(e['role']) for e in step['substeps']}:
-        raise ValueError('Prediction agent is absent from selected step')
+    known_agents = {agent(e['role']) for s in trajectory['steps'] for e in s['substeps']}
+    if not isinstance(role, str) or not role.strip() or agent(role) not in known_agents:
+        raise ValueError('Prediction agent is absent from trajectory')
     refs = raw.get('evidence_refs', [])
     if not isinstance(refs, list):
         raise ValueError('evidence_refs must be a list')

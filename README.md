@@ -223,6 +223,9 @@ builtins, no model credentials, and OS limits where supported. This is isolated
 execution **without a claim of a complete security sandbox**. Its approved
 standard-library interface is narrower than unrestricted reference execution;
 unsupported generated code is recorded as ERROR rather than repaired invisibly.
+Imports expose explicitly approved exports through module facades. Raw module
+internals, dynamic attribute helpers, frame/traceback introspection, and
+`str.format`/`format_map` are rejected; generated checks can use f-strings.
 No optional reflection/pruning or hidden examples are added to paper baselines.
 
 Prompts are explicit reconstructions of the paper's procedures and schemas, using

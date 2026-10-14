@@ -14,14 +14,20 @@ def _selector(value, index):
     if value in (None, '*'):
         return True
     if type(value) is int:
+        if value < 0:
+            raise ValueError('Index selectors must be nonnegative')
         return value == index
     if isinstance(value, list):
+        if any(type(item) is not int or item < 0 for item in value):
+            raise ValueError('Index lists require nonnegative integers, excluding booleans')
         return index in value
     if isinstance(value, str):
         if value.isdigit():
             return int(value) == index
         match = re.fullmatch(r'(\d+)\s*(?:-|:|\.\.)\s*(\d+)', value)
         if match:
+            if int(match[1]) > int(match[2]):
+                raise ValueError('Index range start exceeds end')
             return int(match[1]) <= index <= int(match[2])
     raise ValueError(f'Unsupported index selector {value!r}')
 

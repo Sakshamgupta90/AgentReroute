@@ -1,6 +1,6 @@
 # AgentRx Reproduction Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Deliver a runnable, audited reconstruction of AgentRx and its benchmark experiments.
 
@@ -34,11 +34,11 @@
 
 **Interfaces:** `normalize(raw, domain, trajectory_id) -> dict`; `prepare_corpus(source, output) -> dict` writes `manifest.json` and `cases.json`; cases have `trajectory`, `gold`, `policy`, `tools` kept separately.
 
-- [ ] Write failing tests for label isolation, explicit indices, root lookup by ID, aliases, and mismatched gold steps.
-- [ ] Run `python3 -m unittest tests.test_data -v`; confirm missing implementation fails.
-- [ ] Implement contracts, pinned-source import, provenance/hash inventory, taxonomy, and license notices.
-- [ ] Run data tests and audit all released pairs; record actual usable/excluded counts.
-- [ ] Commit data-contract implementation.
+- [x] Write failing tests for label isolation, explicit indices, root lookup by ID, aliases, and mismatched gold steps.
+- [x] Run `python3 -m unittest tests.test_data -v`; confirm missing implementation fails.
+- [x] Implement contracts, pinned-source import, provenance/hash inventory, taxonomy, and license notices.
+- [x] Run data tests and audit all released pairs; record actual usable/excluded counts.
+- [x] Commit data-contract implementation.
 
 ### Task 2: Guarded Python and semantic checking
 
@@ -46,10 +46,10 @@
 
 **Interfaces:** `validate_constraint(dict) -> dict`; `guard_matches(constraint, step) -> bool`; `check_constraint(constraint, trajectory, offset, provider, context) -> dict` returns SKIP/SAT/VIOL/ERROR.
 
-- [ ] Write failing tests for compound event guards, ranges/regex, sparse indices, Python booleans/timeouts, rejected code, semantic UNCLEAR, malformed rubric, and prefix-only evidence.
-- [ ] Run `python3 -m unittest tests.test_constraints -v`; confirm failure.
-- [ ] Implement schema aliases, bounded isolated checks, rubric validation, and evidence records.
-- [ ] Run the checker tests and commit.
+- [x] Write failing tests for compound event guards, ranges/regex, sparse indices, Python booleans/timeouts, rejected code, semantic UNCLEAR, malformed rubric, and prefix-only evidence.
+- [x] Run `python3 -m unittest tests.test_constraints -v`; confirm failure.
+- [x] Implement schema aliases, bounded isolated checks, rubric validation, and evidence records.
+- [x] Run the checker tests and commit.
 
 ### Task 3: Models, prompts, and diagnostic pipeline
 
@@ -57,10 +57,10 @@
 
 **Interfaces:** `provider.complete(stage, payload) -> dict`; `diagnose(trajectory, policy, tools, config, provider, artifacts) -> dict`; `CachedProvider` namespaces requests by experiment identity and records raw responses/usage.
 
-- [ ] Write failing tests for prefix synthesis, no future checking, recovered first failure, joint/two-stage judging, invalid predictions, request identity, independent repetitions, and HTTP errors/retries with a local server.
-- [ ] Run pipeline/provider tests; confirm missing behavior fails.
-- [ ] Implement paper taxonomy/checklist prompts, global/dynamic generation, both judging protocols, OpenAI-compatible/Azure clients, environment configuration, and resumable request artifacts.
-- [ ] Run pipeline/provider/checker/data tests and commit.
+- [x] Write failing tests for prefix synthesis, no future checking, recovered first failure, joint/two-stage judging, invalid predictions, request identity, independent repetitions, and HTTP errors/retries with a local server.
+- [x] Run pipeline/provider tests; confirm missing behavior fails.
+- [x] Implement paper taxonomy/checklist prompts, global/dynamic generation, both judging protocols, OpenAI-compatible/Azure clients, environment configuration, and resumable request artifacts.
+- [x] Run pipeline/provider/checker/data tests and commit.
 
 ### Task 4: Repeated experiments and truthful reports
 
@@ -68,10 +68,10 @@
 
 **Interfaces:** `score(cases, predictions) -> dict`; `run_experiment(corpus_dir, config, output, provider_factory) -> dict`; `evaluate_run(corpus_dir, run_dir) -> dict`.
 
-- [ ] Write failing tests for missing/abstained/invalid predictions, temporal category ordering/ties, failed-agent aliases, mean/sample SD, fixed denominators, resume invalidation, and per-domain blocked reports.
-- [ ] Run experiment/evaluation tests; confirm failure.
-- [ ] Implement all six Table 4 configurations, both generation modes, repeated independent runs, JSON/CSV/Markdown tables and confusion matrices; add GPT-5/o3/DeepSeek configurations and external baseline/MAST import interfaces.
-- [ ] Run all tests and commit.
+- [x] Write failing tests for missing/abstained/invalid predictions, temporal category ordering/ties, failed-agent aliases, mean/sample SD, fixed denominators, resume invalidation, and per-domain blocked reports.
+- [x] Run experiment/evaluation tests; confirm failure.
+- [x] Implement all six Table 4 configurations, both generation modes, repeated independent runs, JSON/CSV/Markdown tables and confusion matrices; add GPT-5/o3/DeepSeek configurations and external baseline/MAST import interfaces.
+- [x] Run all tests and commit.
 
 ### Task 5: CLI, documentation, smoke test, and review
 
@@ -79,9 +79,9 @@
 
 **Interfaces:** `python -m agentrx {prepare,audit,diagnose,run,evaluate,import-predictions,stress}`.
 
-- [ ] Write failing subprocess tests for offline CLI smoke and missing-credential exit behavior.
-- [ ] Run CLI tests; confirm failure.
-- [ ] Implement commands and usage documentation, fake smoke example, benchmark limitations, and reconstruction deviations.
-- [ ] Run full suite, build/install package locally, audit 73 released pairs, execute smoke test and offline repeated experiment, and verify live-run preflight without credentials.
-- [ ] Request one independent whole-project code review and fix material findings with regression tests.
-- [ ] Record verification evidence and commit final implementation; report external blockers accurately.
+- [x] Write failing subprocess tests for offline CLI smoke and missing-credential exit behavior.
+- [x] Run CLI tests; confirm failure.
+- [x] Implement commands and usage documentation, fake smoke example, benchmark limitations, and reconstruction deviations.
+- [x] Run full suite, build/install package locally, audit 73 released pairs, execute smoke test and offline repeated experiment, and verify live-run preflight without credentials.
+- [x] Request one independent whole-project code review and fix material findings with regression tests.
+- [x] Record verification evidence and commit final implementation; report external blockers accurately.

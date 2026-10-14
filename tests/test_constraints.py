@@ -80,3 +80,29 @@ class ConstraintTests(unittest.TestCase):
     def test_skip_never_runs_python(self):
         c = python_constraint(['raise ValueError("must not run")'], {'step_index': 99})
         self.assertEqual(check_constraint(c, self.ir, 0, None, {})['verdict'], 'SKIP')
+
+    def test_module_and_dynamic_attribute_paths_cannot_read_files(self):
+        attacks = [
+            ['import statistics', 'return statistics.sys.modules["builtins"].open("README.md").read().startswith("# AgentRx")'],
+            ['import statistics', 'import operator',
+             'system = operator.attrgetter("sys")(statistics)',
+             'return system.modules["builtins"].open("README.md").read().startswith("# AgentRx")'],
+            ['g = (g.gi_frame.f_back.f_back.f_globals for _ in [0])',
+             'real = next(g)["__builtins__"]',
+             'return real.open("README.md").read().startswith("# AgentRx")']]
+        for attack in attacks:
+            with self.subTest(attack=attack):
+                result=check_constraint(python_constraint(attack), self.ir, 0, None, {})
+                self.assertEqual(result['verdict'],'ERROR')
+
+    def test_malformed_selectors_are_errors_not_skips_or_violations(self):
+        for selector in [['1'],[True],[-1],[1.0],True,'9-4','bad']:
+            with self.subTest(selector=selector):
+                c=python_constraint(['return False'],{'step_index':selector})
+                with self.assertRaises(ValueError): validate_constraint(c)
+                self.assertEqual(check_constraint(c,self.ir,0,None,{})['verdict'],'ERROR')
+
+    def test_constrained_library_exports_still_support_normal_checks(self):
+        c=python_constraint(['import statistics','import math','from collections import Counter',
+                            'return statistics.mean([1,2,3]) == 2 and math.isclose(2,2) and Counter("aa")["a"] == 2'])
+        self.assertEqual(check_constraint(c,self.ir,0,None,{})['verdict'],'SAT')

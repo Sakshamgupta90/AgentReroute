@@ -91,3 +91,26 @@ class PipelineTests(unittest.TestCase):
             result = diagnose(self.ir, '', {}, {'evidence': False, 'protocol': 'step_then_category'}, Abstaining(), d)
             self.assertEqual(result['status'], 'ok')
             self.assertEqual(result['prediction']['category'], 'Inconclusive')
+
+    def test_responsible_agent_can_differ_from_selected_event_speaker(self):
+        from agentrx.pipeline import validate_prediction
+        ir=normalize({'trajectory_id':'handoff','steps':[
+            {'index':1,'substeps':[{'role':'Assistant','content':'proposal'}]},
+            {'index':2,'substeps':[{'role':'user','content':'confirmation'}]}]},'tau')
+        p=validate_prediction({'step_index':2,'agent':'Assistant','category':'InvalidInvocation',
+                               'rationale':'assistant responsible for earlier proposal'},ir)
+        self.assertEqual(p['agent'],'Assistant')
+        with self.assertRaises(ValueError):
+            validate_prediction({'step_index':2,'agent':'Nonexistent','category':'InvalidInvocation',
+                                 'rationale':'invented agent'},ir)
+
+    def test_localization_can_abstain_while_deferring_category(self):
+        class NoCategory(TraceProvider):
+            def complete(self,stage,payload):
+                if stage!='localize': raise AssertionError('must not categorize an unlocalized step')
+                return {'step_index':None,'agent':None,'custom_category':'Insufficient trace',
+                        'rationale':'no decisive event can be grounded'}
+        with tempfile.TemporaryDirectory() as d:
+            result=diagnose(self.ir,'',{}, {'evidence':False,'protocol':'step_then_category'},NoCategory(),d)
+            self.assertEqual(result['status'],'ok')
+            self.assertEqual(result['prediction']['category'],'Inconclusive')

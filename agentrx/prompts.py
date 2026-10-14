@@ -39,6 +39,8 @@ GENERATION = (
     'and return a boolean with an explicit False branch. Permitted imports: json,re,math,statistics,'
     'collections,datetime,itertools,functools,decimal,fractions,operator. No files, network, private '
     'attributes, environment access, classes, eval, or exec. Use only the observed prefix. '
+    'Imports expose only approved exports, never raw module internals. No operator.attrgetter, '
+    'operator.methodcaller, frame/traceback introspection, str.format, or str.format_map; use f-strings. '
     'For semantic checks include objective rubric criteria, a scope, and 2-4 focus events. '
     'Do not duplicate global constraints in dynamic output. '
 )
@@ -47,6 +49,8 @@ JUDGING = (
     'if recovered, continue. Select the earliest unrecovered, causally decisive failure that explains '
     'the unsuccessful task. Distinguish root causes from downstream symptoms. Validation violations '
     'are fallible evidence: ignore false positives and irrelevant violations. '
+    'The responsible agent need not be the speaker at the selected event; attribution and event '
+    'index are independent. Use an agent observed in the supplied trajectory. '
     'Return {"step_index": original integer index or null, "agent": exact responsible role or null, '
     '"category": taxonomy identifier, "rationale": evidence-grounded explanation including recovery, '
     '"evidence_refs": [{"step_index": original integer, "substep_index": original integer}], '
@@ -74,7 +78,9 @@ def messages(stage, payload):
         if payload.get('checklist'):
             instruction += ' Answer the relevant checklist questions in your rationale before selecting a label. '
         if stage == 'localize':
-            instruction += 'This phase selects only step_index, agent, rationale, evidence_refs; defer category. '
+            instruction += ('This phase selects only step_index, agent, rationale, evidence_refs; defer category. '
+                            'If localization is unsupported, return null step_index/agent with rationale and '
+                            'a nonempty custom_category; this is normalized to an Inconclusive abstention. ')
         elif stage == 'categorize':
             instruction += 'The first phase fixed selected_step. Assign its category without changing step or agent. '
     else:
