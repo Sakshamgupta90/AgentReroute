@@ -1,0 +1,168 @@
+"""Command-line reproduction, audit, diagnosis, evaluation, and offline smoke."""
+import argparse
+import json
+import subprocess
+import sys
+from importlib.resources import files
+from pathlib import Path
+from .data import (EXPECTED, REFERENCE_REVISION, REFERENCE_URL, load_corpus,
+                   normalize, normalize_gold, prepare_corpus, validate_case)
+from .experiments import (evaluate_run, import_predictions, run_experiment, run_stress,
+                          validate_experiment)
+from .io import digest, read_json, write_json
+from .pipeline import diagnose, validate_config
+from .providers import CachedProvider, HTTPProvider, ReplayProvider
+
+
+def fetch_reference(destination):
+    destination=Path(destination).resolve()
+    if destination.exists():
+        try:
+            revision=subprocess.check_output(['git','-C',str(destination),'rev-parse','HEAD'],text=True,
+                                             stderr=subprocess.DEVNULL).strip()
+        except (subprocess.CalledProcessError,FileNotFoundError):
+            raise ValueError('Fetch destination already exists; select a new empty path') from None
+        if revision != REFERENCE_REVISION:
+            raise ValueError('Existing reference checkout is not the pinned revision; choose a new path')
+        return destination
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    subprocess.run(['git','init',str(destination)],check=True,stdout=subprocess.DEVNULL)
+    subprocess.run(['git','-C',str(destination),'fetch','--depth','1',REFERENCE_URL,REFERENCE_REVISION],check=True)
+    subprocess.run(['git','-C',str(destination),'checkout','--detach','FETCH_HEAD'],check=True,stdout=subprocess.DEVNULL)
+    return destination
+
+
+def smoke(output):
+    output=Path(output)
+    demo=json.loads(files('agentrx').joinpath('resources/demo.json').read_text(encoding='utf-8'))
+    trajectory=normalize(demo['trajectory'],'tau')
+    case={'trajectory':trajectory,'gold':normalize_gold(demo['annotation']),'policy':'','tools':{}}
+    validate_case(case)
+    cases=[case]
+    write_json(output/'fixture_replay.json',demo['responses'])
+    write_json(output/'corpus/cases.json',cases)
+    write_json(output/'corpus/manifest.json',{'corpus_hash':digest(cases),'available_total':1,
+        'measurement_scope':'offline_fixture_corpus','domains':{
+            domain:{'expected':count,'available':1 if domain=='tau' else 0,'status':'fixture_only'}
+            for domain,count in EXPECTED.items()}})
+    config={'name':'offline-smoke','repetitions':3,'domains':['tau'],
+            'client':{'provider':'replay','replay_file':str((output/'fixture_replay.json').resolve())},
+            'variants':[{'name':'baseline','evidence':False,'checklist':False},
+                        {'name':'agentrx','evidence':True,'checklist':True}]}
+    return run_experiment(output/'corpus',config,output/'experiment')
+
+
+def parser():
+    p=argparse.ArgumentParser(description='AgentRx paper reconstruction; benchmark data and offline fixtures are kept distinct.')
+    commands=p.add_subparsers(dest='command',required=True)
+    prepare=commands.add_parser('prepare',help='Import and audit authors\' released benchmark subset')
+    source=prepare.add_mutually_exclusive_group(required=True)
+    source.add_argument('--source',type=Path)
+    source.add_argument('--fetch',action='store_true')
+    prepare.add_argument('--reference-dir',type=Path,default=Path('data/reference'))
+    prepare.add_argument('--out',type=Path,default=Path('data/benchmark'))
+    audit=commands.add_parser('audit',help='Verify corpus hashes and gold references')
+    audit.add_argument('--corpus',type=Path,default=Path('data/benchmark'))
+    single=commands.add_parser('diagnose',help='Diagnose one raw or normalized trajectory')
+    single.add_argument('--input',type=Path,required=True)
+    single.add_argument('--domain',choices=list(EXPECTED),required=True)
+    single.add_argument('--config',type=Path)
+    single.add_argument('--variant',help='Variant name from config (default: first)')
+    single.add_argument('--replay',type=Path,help='Explicit offline fixture responses; never benchmark measurements')
+    single.add_argument('--out',type=Path,required=True)
+    single.add_argument('--policy',type=Path)
+    single.add_argument('--tools',type=Path)
+    run=commands.add_parser('run',help='Run independent benchmark repetitions, resumable')
+    run.add_argument('--corpus',type=Path,default=Path('data/benchmark'))
+    run.add_argument('--config',type=Path,default=Path('configs/paper_gpt5.json'))
+    run.add_argument('--out',type=Path,required=True)
+    run.add_argument('--preflight',action='store_true',help='Validate corpus/config/credentials without calling a model')
+    evaluate=commands.add_parser('evaluate',help='Regenerate fixed-denominator reports from stored jobs')
+    evaluate.add_argument('--corpus',type=Path,default=Path('data/benchmark'))
+    evaluate.add_argument('--run',type=Path,required=True)
+    replay=commands.add_parser('smoke',help='Offline fixture test of generation/checking/judging/repetition plumbing')
+    replay.add_argument('--out',type=Path,default=Path('runs/smoke'))
+    external=commands.add_parser('import-predictions',help='Score external W&W or other baseline predictions')
+    external.add_argument('--corpus',type=Path,default=Path('data/benchmark'))
+    external.add_argument('--input',type=Path,required=True)
+    external.add_argument('--source-name',required=True)
+    external.add_argument('--out',type=Path,required=True)
+    stress=commands.add_parser('stress',help='Unlabeled MAST-style normalized IR; no gold accuracy claims')
+    stress.add_argument('--input',type=Path,required=True)
+    stress.add_argument('--config',type=Path,required=True)
+    stress.add_argument('--out',type=Path,required=True)
+    return p
+
+
+def _brief(summary, path):
+    return {'measurement_kind':summary['measurement_kind'], 'output':str(path.resolve()),
+            'scope':summary.get('measurement_scope', 'unlabeled_stress'),
+            'result_rows':len(summary.get('results',[]))}
+
+
+def main(argv=None):
+    args=parser().parse_args(argv)
+    try:
+        if args.command=='prepare':
+            source=fetch_reference(args.reference_dir) if args.fetch else args.source
+            manifest=prepare_corpus(source,args.out)
+            value={'available_total':manifest['available_total'],'paper_total':170,
+                   'domains':manifest['domains'],'exclusions':manifest['exclusions'],
+                   'corpus_hash':manifest['corpus_hash'],'source_pinned':manifest['source_pinned']}
+        elif args.command=='audit':
+            cases,manifest=load_corpus(args.corpus)
+            value={'validated_pairs':len(cases),'corpus_hash':manifest['corpus_hash'],'domains':manifest['domains']}
+        elif args.command=='smoke':
+            value=_brief(smoke(args.out),args.out/'experiment')
+        elif args.command=='run':
+            config=read_json(args.config)
+            if args.preflight:
+                validated=validate_experiment(config)
+                cases,manifest=load_corpus(args.corpus)
+                provider=HTTPProvider.from_config(validated['client'])
+                value={'preflight':'ok','network_calls':0,'provider':provider.identity,
+                       'available_pairs':len(cases),'domains':manifest['domains']}
+            else:
+                summary=run_experiment(args.corpus,config,args.out)
+                value=_brief(summary,args.out)
+                print(json.dumps(value,indent=2))
+                if any(rep['failed_jobs'] or rep['invalid_predictions'] or rep['partial_checker_jobs']
+                       for row in summary['results'] for rep in row['repetitions']):
+                    return 1
+                return 0
+        elif args.command=='evaluate':
+            value=_brief(evaluate_run(args.corpus,args.run),args.run)
+        elif args.command=='import-predictions':
+            value=import_predictions(args.corpus,args.input,args.out,args.source_name)
+            value={'output':str(args.out.resolve()),'denominator':value['metrics']['denominator']}
+        elif args.command=='stress':
+            value=_brief(run_stress(args.input,read_json(args.config),args.out),args.out)
+        elif args.command=='diagnose':
+            raw=read_json(args.input)
+            if isinstance(raw,list) and len(raw)==1 and isinstance(raw[0],dict) and 'steps' in raw[0]:
+                raw=raw[0]
+            trajectory=normalize(raw,args.domain,args.input.stem if not isinstance(raw,dict) else None)
+            config=validate_experiment(read_json(args.config) if args.config else {})
+            variants=config['variants']
+            variant=next((v for v in variants if v['name']==args.variant),None) if args.variant else variants[0]
+            if variant is None:
+                raise ValueError('Requested variant absent from config')
+            provider=ReplayProvider(args.replay) if args.replay else HTTPProvider.from_config(config['client'])
+            policy=args.policy.read_text(encoding='utf-8') if args.policy else ''
+            tools=read_json(args.tools) if args.tools else {}
+            cached=CachedProvider(provider,args.out/'requests',{'single':digest(trajectory),'variant':variant})
+            result=diagnose(trajectory,policy,tools,variant,cached,args.out)
+            value={'status':result['status'],'prediction':result['prediction'],
+                   'measurement_kind':result['measurement_kind'],'error':result.get('error'),
+                   'violation_count':len(result['violations']),'output':str(args.out.resolve())}
+            print(json.dumps(value,indent=2))
+            return 0 if result['status']=='ok' else 1
+        print(json.dumps(value,indent=2))
+        return 0
+    except (ValueError,KeyError,TypeError,OSError,RuntimeError,subprocess.CalledProcessError) as exc:
+        print(f'Error: {exc}',file=sys.stderr)
+        return 2
+
+
+if __name__=='__main__':
+    raise SystemExit(main())
