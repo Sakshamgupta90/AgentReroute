@@ -98,6 +98,10 @@ benchmark configurations request three independent repetitions.
 
 Other configurations:
 
+- `configs/dev_ollama.json`: local Ollama without credentials (`--model ollama`).
+- `configs/dev_gemini.json`: Google Gemini via OpenAI-compatible endpoint (`--model gemini`).
+- `configs/dev_openai.json`: OpenAI GPT-4o (`--model openai`).
+- `configs/dev_multi.json`: unified configuration with `models` dictionary for quick switching.
 - `configs/azure_gpt5.json`: Azure API key, endpoint, deployment, API version.
 - `configs/paper_o3.json`: o3 ablation.
 - `configs/paper_deepseek.json`: set `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL`, and

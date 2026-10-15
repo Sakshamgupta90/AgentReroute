@@ -14,8 +14,9 @@ from .prompts import prompt_identity
 from .providers import CachedProvider, HTTPProvider
 
 
-CLIENT_KEYS = {'provider','model','base_url','api_key_env','deployment','api_version','settings',
-               'timeout','retries','max_input_chars','replay_file','base_url_env','model_env'}
+CLIENT_KEYS = {'provider','model','base_url','api_key','api_key_env','deployment','api_version','settings',
+               'timeout','retries','max_input_chars','replay_file','base_url_env','model_env',
+               'num_ctx','think','keep_alive'}
 
 
 def experiment_variants(config):
@@ -47,7 +48,7 @@ def experiment_variants(config):
 
 
 def validate_experiment(config):
-    if set(config) - {'name','repetitions','matrix','variants','client','domains','limit_per_domain'}:
+    if set(config) - {'name','repetitions','matrix','variants','client','domains','limit_per_domain','models'}:
         raise ValueError('Unsupported experiment field; credentials must be environment variables')
     if config.get('matrix', 'paper') != 'paper':
         raise ValueError('Only the paper matrix is predefined; use variants for custom studies')
@@ -57,6 +58,13 @@ def validate_experiment(config):
     client = config.get('client',{})
     if not isinstance(client,dict) or set(client)-CLIENT_KEYS:
         raise ValueError('Unsupported client field; do not put secret values in configuration')
+    models = config.get('models')
+    if models is not None:
+        if not isinstance(models, dict):
+            raise ValueError('models must be a dictionary of model configurations')
+        for m_name, m_client in models.items():
+            if not isinstance(m_client, dict) or set(m_client)-CLIENT_KEYS:
+                raise ValueError(f'Unsupported fields in models.{m_name}')
     domains = config.get('domains', list(EXPECTED))
     if not isinstance(domains,list) or not domains or len(set(domains))!=len(domains) or set(domains)-set(EXPECTED):
         raise ValueError('Unknown or duplicated domains')

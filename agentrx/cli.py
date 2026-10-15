@@ -1,5 +1,6 @@
 """Command-line reproduction, audit, diagnosis, evaluation, and offline smoke."""
 import argparse
+import copy
 import json
 import subprocess
 import sys
@@ -12,6 +13,44 @@ from .experiments import (evaluate_run, import_predictions, run_experiment, run_
 from .io import digest, read_json, write_json
 from .pipeline import diagnose, validate_config
 from .providers import CachedProvider, HTTPProvider, ReplayProvider
+
+
+def apply_model_selection(config, model_name):
+    if not model_name:
+        return config
+    cfg = copy.deepcopy(config)
+    models = cfg.get('models', {})
+    if isinstance(models, dict) and model_name in models:
+        cfg['client'] = copy.deepcopy(models[model_name])
+    elif model_name == 'ollama':
+        cfg.setdefault('client', {})
+        cfg['client'] = {'provider': 'ollama', 'model': cfg['client'].get('model', 'qwen2.5-coder:7b'),
+                         'num_ctx': cfg['client'].get('num_ctx', 16384),
+                         'settings': cfg['client'].get('settings', {'temperature': 0})}
+    elif model_name == 'gemini':
+        cfg.setdefault('client', {})
+        cfg['client'] = {'provider': 'gemini', 'model': cfg['client'].get('model', 'gemini-2.5-flash'),
+                         'api_key_env': cfg['client'].get('api_key_env', 'GEMINI_API_KEY')}
+    elif model_name == 'openai':
+        cfg.setdefault('client', {})
+        cfg['client'] = {'provider': 'openai', 'model': cfg['client'].get('model', 'gpt-4o'),
+                         'api_key_env': cfg['client'].get('api_key_env', 'OPENAI_API_KEY')}
+    else:
+        cfg.setdefault('client', {})
+        cfg['client']['model'] = model_name
+    return cfg
+
+
+def resolve_run_config(config_arg, model_arg):
+    if config_arg is not None:
+        return read_json(config_arg)
+    if model_arg == 'ollama':
+        return read_json(Path('configs/dev_ollama.json'))
+    if model_arg == 'gemini':
+        return read_json(Path('configs/dev_gemini.json'))
+    if model_arg == 'openai':
+        return read_json(Path('configs/dev_openai.json'))
+    return read_json(Path('configs/paper_gpt5.json'))
 
 
 def fetch_reference(destination):
@@ -67,6 +106,7 @@ def parser():
     single.add_argument('--input',type=Path,required=True)
     single.add_argument('--domain',choices=list(EXPECTED),required=True)
     single.add_argument('--config',type=Path)
+    single.add_argument('--model',help='Model preset or override (gemini, openai, ollama, or model in config)')
     single.add_argument('--variant',help='Variant name from config (default: first)')
     single.add_argument('--replay',type=Path,help='Explicit offline fixture responses; never benchmark measurements')
     single.add_argument('--out',type=Path,required=True)
@@ -74,7 +114,8 @@ def parser():
     single.add_argument('--tools',type=Path)
     run=commands.add_parser('run',help='Run independent benchmark repetitions, resumable')
     run.add_argument('--corpus',type=Path,default=Path('data/benchmark'))
-    run.add_argument('--config',type=Path,default=Path('configs/paper_gpt5.json'))
+    run.add_argument('--config',type=Path,default=None)
+    run.add_argument('--model',help='Model preset or override (gemini, openai, ollama, or model in config)')
     run.add_argument('--out',type=Path,required=True)
     run.add_argument('--preflight',action='store_true',help='Validate corpus/config/credentials without calling a model')
     evaluate=commands.add_parser('evaluate',help='Regenerate fixed-denominator reports from stored jobs')
@@ -115,7 +156,9 @@ def main(argv=None):
         elif args.command=='smoke':
             value=_brief(smoke(args.out),args.out/'experiment')
         elif args.command=='run':
-            config=read_json(args.config)
+            config = resolve_run_config(args.config, args.model)
+            if args.model:
+                config = apply_model_selection(config, args.model)
             if args.preflight:
                 validated=validate_experiment(config)
                 cases,manifest=load_corpus(args.corpus)
@@ -142,7 +185,10 @@ def main(argv=None):
             if isinstance(raw,list) and len(raw)==1 and isinstance(raw[0],dict) and 'steps' in raw[0]:
                 raw=raw[0]
             trajectory=normalize(raw,args.domain,args.input.stem if not isinstance(raw,dict) else None)
-            config=validate_experiment(read_json(args.config) if args.config else {})
+            config_dict = read_json(args.config) if args.config else (resolve_run_config(None, args.model) if args.model else {})
+            if args.model:
+                config_dict = apply_model_selection(config_dict, args.model)
+            config=validate_experiment(config_dict)
             variants=config['variants']
             variant=next((v for v in variants if v['name']==args.variant),None) if args.variant else variants[0]
             if variant is None:

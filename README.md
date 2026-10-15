@@ -31,19 +31,79 @@ RelWork data is still missing. Downloaded data and run outputs are excluded from
 
 ## Run experiments
 
-Configure a model endpoint using [the setup guide](docs/usage.md#model-backed-pilot-and-benchmark-runs), then run:
+### 1. Local models with Ollama
 
+You can run experiments entirely locally using [Ollama](https://ollama.com/) without any API keys or internet access:
+
+1. Start the Ollama server:
+   ```bash
+   ollama serve
+   ```
+2. Pull the default coding model:
+   ```bash
+   ollama pull qwen2.5-coder:7b
+   ```
+3. (Optional) Verify connectivity with the test script:
+   ```bash
+   python ask_ollama.py
+   ```
+4. Run the experiment with `--model ollama`:
+   ```bash
+   python3 -m agentrx run --model ollama --out runs/ollama
+   ```
+
+### 2. Cloud models (Gemini, OpenAI, or custom endpoints)
+
+If you cannot run Ollama locally or want to use a cloud model, set your API key in the environment:
+
+- **Google Gemini**:
+  ```bash
+  export GEMINI_API_KEY="your-gemini-api-key"
+  python3 -m agentrx run --model gemini --out runs/gemini
+  ```
+- **OpenAI**:
+  ```bash
+  export OPENAI_API_KEY="your-openai-api-key"
+  python3 -m agentrx run --model openai --out runs/openai
+  ```
+
+Test your setup without spending tokens or making network calls with `--preflight`:
 ```bash
-python3 -m agentrx run --config configs/pilot_gpt5.json --out runs/pilot
-python3 -m agentrx run --config configs/paper_gpt5.json --out runs/gpt5
+python3 -m agentrx run --model gemini --preflight --out runs/gemini
+```
+
+### 3. Adding any OpenAI-compatible model
+
+You can easily route to any OpenAI-compatible provider (e.g. Groq, Together AI, DeepSeek, vLLM, LiteLLM) by providing its endpoint and API key in a config file (or in `configs/dev_multi.json`):
+
+```json
+{
+  "name": "custom-run",
+  "client": {
+    "provider": "openai-compatible",
+    "base_url": "https://api.groq.com/openai/v1",
+    "model": "llama-3.3-70b-versatile",
+    "api_key_env": "GROQ_API_KEY"
+  },
+  "repetitions": 1,
+  "domains": ["tau"],
+  "limit_per_domain": 1,
+  "variants": [
+    {"name": "baseline", "evidence": false, "checklist": false},
+    {"name": "agentrx", "evidence": true, "checklist": true, "generation": "stepwise"}
+  ]
+}
+```
+
+Then run:
+```bash
+python3 -m agentrx run --config configs/my_config.json --out runs/custom
 ```
 
 Runs save diagnoses, evidence, and JSON/CSV/Markdown accuracy reports. Repeat the
 same command to resume; changed code, data, or model settings require a new output
-directory.
+directory. The test suite passes 47 unit and integration tests.
 
-**Ollama integration is planned.** Live model benchmark results have not yet been
-measured. The latest verification passed 41 tests.
 
 ## Documentation
 

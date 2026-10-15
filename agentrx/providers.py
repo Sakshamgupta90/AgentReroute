@@ -56,20 +56,29 @@ class HTTPProvider:
     @classmethod
     def from_config(cls, config):
         kind = config.get('provider', 'openai')
-        if kind not in ('openai', 'openai-compatible', 'azure', 'replay'):
+        if kind not in ('openai', 'openai-compatible', 'azure', 'ollama', 'replay', 'gemini'):
             raise ProviderError('Unsupported model provider')
         if kind == 'replay':
             return ReplayProvider(config['replay_file'])
-        key_env = config.get('api_key_env', 'AZURE_OPENAI_API_KEY' if kind == 'azure' else 'OPENAI_API_KEY')
-        key = os.environ.get(key_env)
+        if kind == 'ollama':
+            return OllamaProvider.from_config(config)
+        key_env = config.get('api_key_env',
+                             'AZURE_OPENAI_API_KEY' if kind == 'azure'
+                             else ('GEMINI_API_KEY' if kind == 'gemini' else 'OPENAI_API_KEY'))
+        key = config.get('api_key') or os.environ.get(key_env)
         if not key:
-            raise ProviderError(f'Set {key_env} in your local environment before model-backed runs')
+            raise ProviderError(f'Set {key_env} in your local environment or config before model-backed runs')
         if config.get('base_url_env') and not os.environ.get(config['base_url_env']):
             raise ProviderError(f"Set {config['base_url_env']} to your versioned model endpoint")
-        base = os.environ.get(config.get('base_url_env', '')) or config.get('base_url') or os.environ.get(
-            'AZURE_OPENAI_ENDPOINT' if kind == 'azure' else 'OPENAI_BASE_URL',
-            '' if kind == 'azure' else 'https://api.openai.com/v1')
-        model = os.environ.get(config.get('model_env', '')) or config.get('model', 'gpt-5')
+        default_base = ('https://generativelanguage.googleapis.com/v1beta/openai' if kind == 'gemini'
+                        else ('' if kind == 'azure' else 'https://api.openai.com/v1'))
+        base = (config.get('base_url')
+                or os.environ.get(config.get('base_url_env', ''))
+                or os.environ.get('AZURE_OPENAI_ENDPOINT' if kind == 'azure'
+                                  else ('GEMINI_BASE_URL' if kind == 'gemini' else 'OPENAI_BASE_URL'),
+                                  default_base))
+        default_model = 'gemini-3.5-flash' if kind == 'gemini' else 'gpt-5'
+        model = config.get('model') or os.environ.get(config.get('model_env', '')) or default_model
         return cls(model, base, key, provider=kind,
                    deployment=config.get('deployment') or os.environ.get('AZURE_OPENAI_DEPLOYMENT'),
                    api_version=config.get('api_version', os.environ.get('AZURE_OPENAI_API_VERSION', '2024-10-21')),
@@ -121,6 +130,101 @@ class HTTPProvider:
                 raise ProviderError(f'Malformed model JSON response ({type(exc).__name__})') from None
             time.sleep(min(10, self.retry_delay * 2**attempt))
         raise ProviderError('Model retries exhausted')
+
+
+class OllamaProvider:
+    """Local Ollama via the native /api/chat endpoint (no credential, explicit context window).
+
+    The OpenAI-compatible endpoint cannot set num_ctx and Ollama silently truncates prompts
+    that exceed it, so the native API is used and any context overflow is raised as an error.
+    """
+    measurement_kind = 'model_measurement'
+    OPTIONS = {'temperature', 'top_p', 'top_k', 'seed', 'num_predict', 'repeat_penalty'}
+
+    def __init__(self, model, base_url='http://127.0.0.1:11434', num_ctx=16384, think=None,
+                 settings=None, timeout=900, retries=1, retry_delay=1, keep_alive='10m'):
+        url = parse.urlparse(base_url)
+        if url.scheme not in ('http', 'https') or not url.hostname or url.username or url.password or url.query or url.fragment:
+            raise ProviderError('Invalid Ollama base URL (no credentials/query/fragment allowed)')
+        if url.scheme == 'http' and url.hostname not in ('127.0.0.1', 'localhost', '::1'):
+            raise ProviderError('Remote Ollama endpoints must use HTTPS')
+        if not isinstance(num_ctx, int) or num_ctx < 2048:
+            raise ProviderError('num_ctx must be an integer >= 2048')
+        self.settings = dict(settings or {})
+        if set(self.settings) - self.OPTIONS:
+            raise ProviderError('Unsupported Ollama option')
+        self.model, self.num_ctx, self.think, self.keep_alive = model, num_ctx, think, keep_alive
+        self.timeout, self.retries, self.retry_delay = timeout, retries, retry_delay
+        self.url = base_url.rstrip('/') + '/api/chat'
+        self.identity = {'provider': 'ollama', 'model': model, 'base_url': base_url, 'num_ctx': num_ctx,
+                         'think': think, 'settings': self.settings, 'client': 'python-urllib',
+                         'python': platform.python_version()}
+        self.last_telemetry = {}
+        self.last_raw = None
+
+    @classmethod
+    def from_config(cls, config):
+        base = (os.environ.get(config.get('base_url_env', '')) or config.get('base_url')
+                or os.environ.get('OLLAMA_HOST_URL', 'http://127.0.0.1:11434'))
+        model = os.environ.get(config.get('model_env', '')) or config.get('model', 'qwen2.5-coder:7b')
+        return cls(model, base, num_ctx=config.get('num_ctx', 16384), think=config.get('think'),
+                   settings=config.get('settings'), timeout=config.get('timeout', 900),
+                   retries=config.get('retries', 1), keep_alive=config.get('keep_alive', '10m'))
+
+    def _post(self, body):
+        opener = request.build_opener(NoRedirect())
+        encoded = json.dumps(body, ensure_ascii=False).encode()
+        for attempt in range(self.retries + 1):
+            try:
+                req = request.Request(self.url, data=encoded, headers={'Content-Type': 'application/json'},
+                                      method='POST')
+                with opener.open(req, timeout=self.timeout) as response:
+                    content = response.read(20_000_001)
+                if len(content) > 20_000_000:
+                    raise ProviderError('Model response exceeds size limit')
+                return json.loads(content)
+            except error.HTTPError as exc:
+                exc.close()
+                if exc.code == 404:
+                    raise ProviderError(f'Ollama model {self.model!r} not found; run: ollama pull {self.model}') from None
+                if exc.code not in (500, 502, 503, 504) or attempt == self.retries:
+                    raise ProviderError(f'Ollama HTTP {exc.code}') from None
+            except (error.URLError, TimeoutError, OSError):
+                if attempt == self.retries:
+                    raise ProviderError('Ollama unreachable; is `ollama serve` running?') from None
+            time.sleep(min(10, self.retry_delay * 2**attempt))
+        raise ProviderError('Ollama retries exhausted')
+
+    def complete(self, stage, payload):
+        body = {'model': self.model, 'messages': messages(stage, payload), 'format': 'json',
+                'stream': False, 'keep_alive': self.keep_alive,
+                'options': {'num_ctx': self.num_ctx, **self.settings}}
+        if self.think is not None:
+            body['think'] = self.think
+        self.last_raw = None
+        start = time.monotonic()
+        raw = self._post(body)
+        self.last_raw = raw
+        prompt_tokens, output_tokens = raw.get('prompt_eval_count', 0), raw.get('eval_count', 0)
+        self.last_telemetry = {
+            'model': raw.get('model'), 'seconds': time.monotonic() - start,
+            'usage': {'prompt_tokens': prompt_tokens, 'completion_tokens': output_tokens,
+                      'total_tokens': prompt_tokens + output_tokens},
+            'load_seconds': raw.get('load_duration', 0) / 1e9,
+            'prefill_seconds': raw.get('prompt_eval_duration', 0) / 1e9,
+            'decode_seconds': raw.get('eval_duration', 0) / 1e9,
+            'timestamp': datetime.now(timezone.utc).isoformat()}
+        if prompt_tokens + output_tokens >= self.num_ctx:
+            raise ProviderError(f'Context window ({self.num_ctx}) reached; raise num_ctx, nothing was trusted')
+        if raw.get('done_reason') not in ('stop', None):
+            raise ProviderError(f"Incomplete model response: {raw.get('done_reason')}")
+        try:
+            answer = json.loads(raw['message']['content'])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise ProviderError(f'Malformed model JSON response ({type(exc).__name__})') from None
+        if not isinstance(answer, dict):
+            raise ProviderError('Model must return a JSON object')
+        return answer
 
 
 class ReplayProvider:
