@@ -60,7 +60,8 @@ def _recovery(report):
             'n_controls': report['n_controls'], 'metrics': report['metrics'], 'by_mode': report['by_mode']}
 
 
-def build_dashboard(corpus_dir, attribution_reports=(), recovery_reports=(), out_path='dashboard.html', title=None):
+def build_dashboard(corpus_dir, attribution_reports=(), recovery_reports=(), out_path='dashboard.html', title=None,
+                    robustness=None):
     manifest = read_json(Path(corpus_dir) / 'manifest.json')
     rows, traces = _corpus_rows(corpus_dir)
     offline = any(r['measurement_kind'] == 'offline_fixture' for r in rows)
@@ -68,7 +69,8 @@ def build_dashboard(corpus_dir, attribution_reports=(), recovery_reports=(), out
                      'heldout_variants': manifest.get('heldout_variants', []), 'dropped': manifest.get('dropped', {})},
             'rows': rows, 'traces': traces,
             'attribution': [_attribution(read_json(p) if not isinstance(p, dict) else p) for p in attribution_reports],
-            'recovery': [_recovery(read_json(p) if not isinstance(p, dict) else p) for p in recovery_reports]}
+            'recovery': [_recovery(read_json(p) if not isinstance(p, dict) else p) for p in recovery_reports],
+            'robustness': robustness}
     payload = json.dumps(data, ensure_ascii=False).replace('</', '<\\/')
     page = TEMPLATE.replace('__TITLE__', html.escape(title or 'AgentReroute benchmark')).replace('__DATA__', payload)
     out_path = Path(out_path)
@@ -156,6 +158,9 @@ svg text{fill:var(--muted);font-size:11px}
   <div class="card"><h3>Recovery vs cost (tokens per failed episode)</h3><div id="costChart"></div></div>
 </div>
 <div class="card scroll" style="margin-top:16px" id="recTable"></div>
+
+<h2>Agent robustness (before recovery)</h2>
+<div class="card scroll" id="robust"></div>
 
 <h2>Trace explorer</h2>
 <div class="card">
@@ -280,6 +285,20 @@ if (D.recovery.length){
   $('recTable').innerHTML = `<table><tr><th>Policy</th><th class="n">Failed</th><th class="n">Controls</th>${RC.map(c=>`<th class="n">${c[1]}</th>`).join('')}${allModes.map(m=>`<th class="n">${esc(short(m))}</th>`).join('')}</tr>`+
     rs.map(r=>`<tr><td>${esc(r.policy)}</td><td class="n">${r.n_failed}</td><td class="n">${r.n_controls}</td>${RC.map(([k])=>`<td class="n">${k.startsWith('tokens')||k.startsWith('attempts')||k==='budget_breaches'?num(val(r.metrics[k])):pct(val(r.metrics[k]))}</td>`).join('')}${allModes.map(m=>`<td class="n">${r.by_mode[m]?pct(r.by_mode[m].recovery_rate):''}</td>`).join('')}</tr>`).join('')+'</table>';
 } else { $('recChart').innerHTML = '<p class="muted">No recovery reports given. Run <code>python3 -m benchmark recover</code>.</p>'; }
+
+// ---------- robustness
+if (D.robustness) {
+  const R = D.robustness, rows = Object.entries(R.by_variant);
+  let h = `<p class="muted">${R.eligible_tasks} of ${R.tasks} tasks eligible · ${R.injected} activated faults. Robustness = share of injected runs that still succeed (MAS-FIRE RS; ToolMaze PRR for tool faults). Recovery cost = ToolMaze RC (0 optimal, 1 failed).</p>`;
+  h += `<table><tr><th>Fault variant</th><th>Mode</th><th class="n">n</th><th class="n">Failed</th><th class="n">Robustness</th><th class="n">Recovery cost</th></tr>` +
+    rows.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(short(v.mode))}</td><td class="n">${v.n}</td><td class="n">${v.failed}</td><td class="n">${pct(val(v.robustness_score))}${ci(v.robustness_score)}</td><td class="n">${num(v.recovery_cost)}</td></tr>`).join('') + '</table>';
+  const cells = Object.entries(R.toolmaze.cells || {});
+  if (cells.length) h += `<h3 style="margin-top:16px">ToolMaze cells</h3><table><tr><th>Cell</th><th class="n">n</th><th class="n">Success (TSR = PRR)</th><th class="n">Recovery cost</th></tr>` +
+    cells.map(([k,v])=>`<tr><td>${esc(k)}</td><td class="n">${v.n}</td><td class="n">${pct(val(v.robustness_score))}</td><td class="n">${num(v.recovery_cost)}</td></tr>`).join('') + '</table>';
+  const gaps = Object.entries(R.toolmaze.explicit_minus_implicit || {});
+  if (gaps.length) h += `<p class="muted">Explicit − implicit success gap: ${gaps.map(([k,v])=>`${k} ${(100*v).toFixed(0)} points`).join(', ')}.</p>`;
+  $('robust').innerHTML = h;
+} else { $('robust').innerHTML = '<p class="muted">Pass generation episodes to include robustness (python3 -m benchmark evaluate does this).</p>'; }
 
 // ---------- trace explorer
 const opt = (v,l) => `<option value="${esc(v)}">${esc(l)}</option>`;

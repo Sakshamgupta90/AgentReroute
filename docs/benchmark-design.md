@@ -143,7 +143,8 @@ fields that existing readers can ignore.
 |---|---|
 | Detection (online) | Precision, recall, false alarms on controls, detection delay; scored on trace prefixes with future steps hidden |
 | Attribution | Agent accuracy; step accuracy (exact, ±1, ±3) for both `fault_step` and `critical_step`; top-3 hit rate; acceptable-step accuracy; 7-mode macro-F1; expected calibration error |
-| Recovery | Conditional recovery rate, task success, Perturbation Recovery Rate |
+| Recovery | Recovery rate, conditional recovery rate, cost as a multiple of one run |
+| Agent robustness | Per fault: robustness score (MAS-FIRE RS); ToolMaze P1–P4 success (= PRR here), recovery cost RC, explicit − implicit gap |
 | Harm and consistency | Harmful-intervention rate, collateral database changes, pass^k |
 | Efficiency | Tokens, p95 wall time, budget breaches |
 
@@ -227,17 +228,32 @@ Implemented as planned: environment, fault operators for all 7 modes, paired
 generation with causation check and labels, corpus with splits and public/gold
 separation, faultattribution export, external importers (AgentRx release,
 Who&When), attribution/detection/recovery scoring with bootstrap CIs and McNemar,
-baselines, recovery harness with budget caps, dashboard, CLI, 50 tests.
+baselines, recovery harness with budget caps, agent robustness metrics, the `evaluate`
+suite, dashboard, CLI, 70 tests. First real-model pilot: `docs/pilot-2026-10-20.md`.
 
 Deviations and open items:
 
+- Workflow v2 (after the pilot's first tasks): the planner also has the read-only
+  order/product tools, and specialists are told that authentication and user
+  confirmation are already done by the planner. v1 caused artificial failures
+  (unopenable orders at the planner, specialists refusing to act); the workflow
+  version and a prompt digest are now part of the generation settings lock.
 - No separate responder agent; the planner composes the final answer, and mode 7
   is injected there.
 - τ-bench airline (held-out domain) is not implemented. The AgentRx Magentic-One
   traces imported as an external split serve as the out-of-domain check for now.
-- Replay semantics are an explicit modelling choice: agent faults recur when the
-  faulty agent sees an identical context; environment faults persist per their
-  transient/persistent setting (`faults/operators.py`).
+- Replay semantics are an explicit modelling choice (`faults/operators.py`).
+  Agent faults are systematic: on replay they fire again at the same site
+  unless guidance reaches the responsible agent at or before the faulty turn.
+  Restarts, new seeds and notes to other agents do not remove them. The first
+  version ("recurs only on an identical context") was too lenient on a real
+  model and was replaced after the pilot. Environment faults persist per their
+  transient/persistent setting.
+- Drift and context-propagation operators have `once` and `persistent`
+  variants; the pilot showed a 31B model routes around every once-only one.
+- `skip_write` writes a specific, varied success claim built from the skipped
+  call, instead of one canned sentence.
+- Recovery budgets are relative by default (2× the original run's tokens).
 - The faultattribution export labels the domain `tau` (that loader only accepts
   AgentRx domains) and maps the 7 modes to AgentRx categories, which is lossy.
 - The reward ledger is hidden from policies by interface, not by a sandbox.

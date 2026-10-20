@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from benchmark.env.llm import CachedLLM, OllamaClient, ScriptedLLM, parse_json, request
+from benchmark.env.llm import CachedLLM, LLMError, OllamaClient, ScriptedLLM, parse_json, request
 from benchmark.env.tasks import fetch_tau_retail
 from benchmark.importers import import_agentrx, import_whowhen
 from benchmark.io import read_json, write_json
@@ -40,6 +40,29 @@ class OllamaClientTest(unittest.TestCase):
         self.assertNotIn('meta', body)
         self.assertEqual((out.tokens_in, out.tokens_out), (11, 5))
         self.assertEqual(client.model_digest('qwen2.5:7b'), 'abc123')
+
+    def test_retries_timeouts_but_not_client_errors(self):
+        import urllib.error
+        calls, waits = [], []
+
+        def flaky(req, timeout):
+            calls.append(1)
+            if len(calls) < 3:
+                raise TimeoutError('timed out')
+            return FakeResponse(json.dumps({'message': {'content': '{}'}}).encode())
+
+        client = OllamaClient(opener=flaky, retries=4, backoff=1, sleep=waits.append)
+        client.complete(request('m', [{'role': 'user', 'content': 'x'}]))
+        self.assertEqual((len(calls), waits), (3, [1, 3]))
+
+        def bad(req, timeout):
+            calls.append(1)
+            raise urllib.error.HTTPError(req.full_url, 400, 'bad request', {}, None)
+
+        calls.clear()
+        with self.assertRaises(LLMError):
+            OllamaClient(opener=bad, sleep=waits.append).complete(request('m', [{'role': 'user', 'content': 'x'}]))
+        self.assertEqual(len(calls), 1)
 
     def test_cache_returns_identical_completions(self):
         calls = []

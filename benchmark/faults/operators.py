@@ -11,13 +11,20 @@ injected run reproduces the clean prefix exactly up to the site.
 Persistence on replay (used by the recovery harness):
 
 * agent-level faults (prompt mutation, response rewriting, routing, handoff
-  manipulation) are modelled as a deterministic response to an exact context:
-  in replay mode they fire only when the agent's input digest equals the
-  original site's. A repair that changes the agent's context at or before the
-  faulty turn therefore removes the fault; an unmodified replay reproduces it.
+  manipulation) model a *systematic* agent mistake: on replay they fire again at
+  the same site ordinal, whatever else changed (a new seed, a full restart, a
+  generic note to another agent). The one thing that removes the mistake is a
+  guidance directive delivered TO THE RESPONSIBLE AGENT at or before the faulty
+  turn, while that guidance is still in its context (for a specialist: within
+  the same handoff conversation). This is what attribution is for: knowing which
+  agent to correct, and where.
 * environment faults (tool errors, stale data, stuck tools) belong to the world:
   in replay they fire again by call ordinal, with their transient/persistent
-  semantics.
+  semantics; no guidance changes what a tool returns.
+
+Agent faults with ``persistence='persistent'`` fire at the site and at every
+later matching event (a planner that keeps misrouting, a handoff template that
+keeps losing ids); ``'once'`` fires at the site only.
 
 Operators are gold-side: they are constructed by the generator and the recovery
 harness, never by a system under test.
@@ -28,6 +35,10 @@ import random
 import re
 
 from ..env.retail import WRITE_TOOLS
+from ..io import digest
+
+# Bump when operator behaviour changes: it is part of a generation's settings lock.
+OPERATORS_VERSION = 2
 
 READ_TOOLS = ('get_order_details', 'get_product_details', 'list_all_product_types')
 SPECIALISTS = ('order_agent', 'product_agent', 'returns_agent')
@@ -42,7 +53,7 @@ class FaultOperator:
     level = 'agent'          # agent | environment
     PARAMS = {}              # name -> allowed values; first value is the default
 
-    def __init__(self, ordinal=1, replay_digest=None, **params):
+    def __init__(self, ordinal=1, replay=False, **params):
         self.ordinal = int(ordinal)
         self.params = {k: params.get(k, v[0]) for k, v in self.PARAMS.items()}
         for k, v in self.params.items():
@@ -51,29 +62,36 @@ class FaultOperator:
         unknown = set(params) - set(self.PARAMS)
         if unknown:
             raise ValueError(f'{self.name}: unknown parameters {sorted(unknown)}')
-        self.replay_digest = replay_digest
+        self.replay = bool(replay)
         self.seen = 0
         self.fired = []
         self.persist = None
 
     # --------------------------------------------------------------- description
     def spec(self):
-        out = {'name': self.name, 'mode': self.mode, 'method': self.method, 'level': self.level,
-               'ordinal': self.ordinal, 'params': dict(self.params)}
-        if getattr(self, 'site_step', None) is not None:
-            out['site_step'] = self.site_step
-        return out
+        return {'name': self.name, 'mode': self.mode, 'method': self.method, 'level': self.level,
+                'ordinal': self.ordinal, 'params': dict(self.params)}
 
     def replay_copy(self):
-        """Fresh operator for recovery replays, keyed to the original site context."""
-        digest = self.fired[0]['site_digest'] if self.fired and self.level == 'agent' else None
-        return type(self)(ordinal=self.ordinal, replay_digest=digest, **self.params)
+        """Fresh operator for recovery replays: same site, same semantics (see module docstring)."""
+        return type(self)(ordinal=self.ordinal, replay=True, **self.params)
+
+    def persistent(self):
+        return self.params.get('persistence') == 'persistent'
+
+    @staticmethod
+    def corrected(ctx):
+        """True when guidance reached this agent at or before this turn and is still in its context."""
+        step = (ctx.get('guided') or {}).get(ctx.get('agent'))
+        return step is not None and step <= ctx['step_index']
 
     def _hit(self, ctx):
-        """Count a matching site; True when this is the site to inject at."""
+        """Count a matching site; True when the fault fires here."""
         self.seen += 1
-        if self.replay_digest is not None:
-            return ctx.get('input_digest') == self.replay_digest
+        if self.corrected(ctx):
+            return False
+        if self.persistent():
+            return self.seen >= self.ordinal
         return not self.fired and self.seen == self.ordinal
 
     def _record(self, ctx, original, injected, **extra):
@@ -146,8 +164,7 @@ class SkipWrite(_ActionOperator):
         return _is_write(action)
 
     def transform(self, ctx, action):
-        return {'thought': action.get('thought', ''), 'action': 'reply',
-                'content': 'Done. The request has been completed as asked.'}
+        return {'thought': action.get('thought', ''), 'action': 'reply', 'content': completion_claim(action)}
 
 
 class PolicyContradiction(FaultOperator):
@@ -162,20 +179,19 @@ class PolicyContradiction(FaultOperator):
                              'you already have, and report success without checking the result.',
     }
 
-    def __init__(self, ordinal=1, replay_digest=None, site_step=None, **params):
-        super().__init__(ordinal, replay_digest, **params)
-        self.site_step = site_step
+    def __init__(self, ordinal=1, replay=False, target_agent=None, **params):
+        super().__init__(ordinal, replay, **params)
+        self.target_agent = target_agent
+
+    def spec(self):
+        return {**super().spec(), 'target_agent': self.target_agent}
 
     def replay_copy(self):
-        digest = self.fired[0]['site_digest'] if self.fired else None
-        return type(self)(ordinal=self.ordinal, replay_digest=digest, site_step=self.site_step, **self.params)
+        return type(self)(ordinal=self.ordinal, replay=True, target_agent=self.target_agent, **self.params)
 
     def on_prompt(self, ctx, messages):
-        if ctx['agent'] not in SPECIALISTS:
-            return messages, None
-        hit = (ctx.get('input_digest') == self.replay_digest) if self.replay_digest is not None \
-            else (not self.fired and ctx['step_index'] == self.site_step)
-        if not hit:
+        # The site is the target agent's ``ordinal``-th turn (the turn where, clean, it made the write).
+        if ctx['agent'] != self.target_agent or not self._hit(ctx):
             return messages, None
         note = {'role': 'user', 'content': self.TEXT[self.params['directive']]}
         return messages + [note], self._record(ctx, None, note['content'])
@@ -183,10 +199,15 @@ class PolicyContradiction(FaultOperator):
     def matches_step(self, step, run):
         return step.kind == 'agent' and step.action is not None and _is_write(step.action)
 
+    def site(self, step, run, ordinal):
+        turns = sum(1 for s in run.steps if s.index <= step.index and s.actor == step.actor and s.kind == 'agent')
+        return {'ordinal': turns, 'target_agent': step.actor}
+
 
 class Misroute(_ActionOperator):
     """Mode 2 via message routing: the planner's handoff goes to an irrelevant specialist."""
     mode, method, name = 'drift', 'message_routing', 'misroute'
+    PARAMS = {'persistence': ('once', 'persistent')}
 
     def predicate(self, agent, action):
         return agent == 'planner' and action.get('action') == 'handoff'
@@ -200,6 +221,7 @@ class Misroute(_ActionOperator):
 class IrrelevantTool(_ActionOperator):
     """Mode 2 via response rewriting: a specialist calls an irrelevant tool."""
     mode, method, name = 'drift', 'response_rewrite', 'irrelevant_tool'
+    PARAMS = {'persistence': ('once', 'persistent')}
 
     def predicate(self, agent, action):
         return agent in SPECIALISTS and action.get('action') == 'tool' and action.get('tool') in READ_TOOLS
@@ -265,6 +287,42 @@ class MisreadValue(_ActionOperator):
         return action
 
 
+CLAIMS = {
+    'cancel_pending_order': ('Order {order_id} has been cancelled (reason: {reason}). The refund goes back to the '
+                             'original payment method.',
+                             'I cancelled order {order_id} as requested; the refund is on its way.'),
+    'return_delivered_order_items': ('The return for items {item_ids} in order {order_id} has been requested. The '
+                                     'refund will go to {payment_method_id}.',
+                                     'Return submitted for order {order_id}; refund to {payment_method_id}.'),
+    'exchange_delivered_order_items': ('The exchange in order {order_id} has been submitted: {item_ids} for '
+                                       '{new_item_ids}. Any price difference is settled with {payment_method_id}.',
+                                       'Exchange requested for order {order_id} ({item_ids} to {new_item_ids}).'),
+    'modify_pending_order_items': ('Order {order_id} has been updated: {item_ids} changed to {new_item_ids}, paid '
+                                   'with {payment_method_id}.',
+                                   'I modified the items in order {order_id} as confirmed.'),
+    'modify_pending_order_address': ('The shipping address of order {order_id} is now {address1}, {city}.',
+                                     'Order {order_id} will ship to the new address.'),
+    'modify_pending_order_payment': ('Order {order_id} is now paid with {payment_method_id}.',
+                                     'Payment method for order {order_id} updated.'),
+    'modify_user_address': ('The default address for {user_id} is now {address1}, {city}.',
+                            'I updated the user\'s default address.'),
+}
+
+
+class _Fields(dict):
+    def __missing__(self, key):
+        return 'the requested items' if key.endswith('ids') else 'as requested'
+
+
+def completion_claim(action):
+    """A plausible, specific success message for a write that was never executed."""
+    args = action.get('arguments', {})
+    fields = _Fields({k: ', '.join(v) if isinstance(v, list) else v for k, v in args.items()})
+    options = CLAIMS.get(action.get('tool'), ('Done. The request has been completed.',))
+    pick = int(digest(args)[:8], 16) % len(options)
+    return options[pick].format_map(fields)
+
+
 def _shift_number(match):
     text = match.group(0)
     if '.' in text:
@@ -275,7 +333,7 @@ def _shift_number(match):
 class DropContext(_ActionOperator):
     """Mode 6 via message manipulation: required context is dropped from a handoff."""
     mode, method, name = 'context_propagation', 'message_manipulation', 'drop_context'
-    PARAMS = {'variant': ('drop_ids', 'truncate')}
+    PARAMS = {'variant': ('drop_ids', 'truncate'), 'persistence': ('once', 'persistent')}
 
     def predicate(self, agent, action):
         return agent == 'planner' and action.get('action') == 'handoff'
@@ -449,8 +507,11 @@ def candidate_sites(name, params, clean_run):
             continue
         ordinal += 1
         if op.applicable(step, clean_run):
-            sites.append({'ordinal': ordinal, 'step_index': step.index,
-                          'agent': step.tool.get('called_by') if step.kind == 'tool' else step.actor})
+            site = {'ordinal': ordinal, 'step_index': step.index,
+                    'agent': step.tool.get('called_by') if step.kind == 'tool' else step.actor}
+            if hasattr(op, 'site'):
+                site.update(op.site(step, clean_run, ordinal))
+            sites.append(site)
     return sites
 
 

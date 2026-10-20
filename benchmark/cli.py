@@ -13,6 +13,8 @@
   recover           run a recovery policy on a split's replayable episodes
   report            Markdown summary of score/recover reports
   dashboard         self-contained HTML dashboard
+  evaluate          standard suite on a split: baselines, recovery, comparisons, robustness, report, dashboard
+  robustness        agent robustness per fault (MAS-FIRE RS, ToolMaze TSR/PRR/RC)
   smoke             offline end-to-end run with scripted agents (no model, no network)
 """
 import argparse
@@ -142,8 +144,10 @@ def cmd_recover(args):
     if args.predictions:
         hypotheses = {row['trajectory_id']: row.get('hypotheses', [])
                       for row in read_json(args.predictions)['predictions']}
-    policy = POLICIES[args.policy]()
-    caps = BudgetCaps(tokens=args.max_tokens, attempts=args.max_attempts, seconds=args.max_seconds)
+    policy = POLICIES[args.policy](min_confidence=args.min_confidence) if args.policy == 'fixed_rules' \
+        else POLICIES[args.policy]()
+    caps = BudgetCaps(tokens=args.max_tokens, token_multiple=args.token_multiple, attempts=args.max_attempts,
+                      seconds=args.max_seconds)
     report = run_recovery(args.corpus, args.split, policy, _llm_factory(args), caps, hypotheses, args.oracle,
                           not args.failed_only, args.limit)
     if args.predictions and not args.oracle:
@@ -171,37 +175,45 @@ def cmd_dashboard(args):
     return 0
 
 
+def cmd_evaluate(args):
+    """Standard suite on one split: baselines, recovery conditions, comparisons, robustness, report, dashboard."""
+    from .evaluate import evaluate
+    judge = None
+    if args.backend == 'ollama':
+        judge = _ollama(args, args.cache_dir or Path(args.out) / 'llm_cache')
+        factory = lambda domain, task: judge  # noqa: E731
+    else:
+        factory = scripted_llm
+    caps = BudgetCaps(tokens=args.max_tokens, token_multiple=args.token_multiple, attempts=args.max_attempts,
+                      seconds=args.max_seconds)
+    evaluate(args.corpus, args.split, factory, args.out, judge_llm=judge, judge_model=args.model, caps=caps,
+             note=args.note, title=args.title, min_confidence=args.min_confidence)
+    print(f'report -> {Path(args.out) / "report.md"}\ndashboard -> {Path(args.out) / "dashboard.html"}')
+    return 0
+
+
+def cmd_robustness(args):
+    from .generate import load_episodes
+    from .scoring.robustness import markdown as robustness_markdown
+    from .scoring.robustness import robustness
+    report = robustness([e for d in args.gen for e in load_episodes(d)])
+    write_json(args.out, report)
+    print(robustness_markdown(report))
+    return 0
+
+
 def cmd_smoke(args):
-    """Offline end-to-end: scripted agents -> corpus -> baselines -> scoring -> recovery -> dashboard."""
-    from .dashboard import build_dashboard
+    """Offline end-to-end: scripted agents -> corpus -> evaluate (baselines, recovery, robustness, dashboard)."""
+    from .evaluate import evaluate
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     with open(out / 'generate.log', 'w', encoding='utf-8') as log:
         generate({'backend': 'scripted', 'model': 'scripted', 'seeds': [0]}, out / 'generation', log=log)
     manifest = build([out / 'generation'], out / 'corpus')
-    reports, recoveries = [], []
-    for split in ('calibration', 'test'):
-        traces = load_public(out / 'corpus', split)
-        gold = load_gold(out / 'corpus', split)
-        for sub in (random_baseline(traces), last_step_baseline(traces), heuristic_baseline(traces)):
-            sub['split'] = split
-            report = score_attribution(sub, gold)
-            report['split'] = split
-            write_json(out / 'reports' / f'attribution-{split}-{sub["system"]}.json', report)
-            if split == 'test':
-                reports.append(report)
-    heuristic = {r['trajectory_id']: r['hypotheses'] for r in heuristic_baseline(load_public(out / 'corpus', 'test'))['predictions']}
-    for name, kwargs in [('no_recovery', {}), ('full_restart', {}), ('retry_last_step', {}),
-                         ('generic_reflection', {}), ('fixed_rules', {'hypotheses': heuristic}),
-                         ('fixed_rules', {'oracle': True})]:
-        report = run_recovery(out / 'corpus', 'test', POLICIES[name](), scripted_llm, **kwargs)
-        if 'hypotheses' in kwargs:
-            report['policy'] += '+heuristic'
-        write_json(out / 'reports' / f'recovery-test-{report["policy"].replace(":", "-")}.json', report)
-        recoveries.append(report)
     note = 'OFFLINE FIXTURE: scripted agents on the bundled 8-task retail fixture. Verifies the pipeline only.'
-    (out / 'report.md').write_text(markdown(reports, recoveries, note=note) + '\n', encoding='utf-8')
-    build_dashboard(out / 'corpus', reports, recoveries, out / 'dashboard.html', 'AgentReroute benchmark (offline smoke)')
+    with open(out / 'evaluate.log', 'w', encoding='utf-8') as log:
+        evaluate(out / 'corpus', 'test', scripted_llm, out, note=note, title='AgentReroute benchmark (offline smoke)',
+                 log=log)
     print(json.dumps({'splits': manifest['splits'], 'dropped': manifest['dropped']}, indent=2))
     print(f'report -> {out / "report.md"}\ndashboard -> {out / "dashboard.html"}')
     return 0
@@ -252,7 +264,11 @@ def parser():
     s.add_argument('--policy', choices=sorted(POLICIES), required=True); s.add_argument('--predictions')
     s.add_argument('--oracle', action='store_true'); s.add_argument('--failed-only', action='store_true')
     s.add_argument('--limit', type=int); s.add_argument('--backend', choices=('ollama', 'scripted'), default='ollama')
-    s.add_argument('--cache-dir'); s.add_argument('--max-tokens', type=int, default=BudgetCaps.tokens)
+    s.add_argument('--cache-dir'); s.add_argument('--max-tokens', type=int, default=None,
+                                                  help='fixed per-episode token cap (default: relative)')
+    s.add_argument('--token-multiple', type=float, default=BudgetCaps.token_multiple,
+                   help='relative cap: this many times the original run tokens')
+    s.add_argument('--min-confidence', type=float, default=0.0, help='fixed_rules: ignore weaker hypotheses')
     s.add_argument('--max-attempts', type=int, default=BudgetCaps.attempts)
     s.add_argument('--max-seconds', type=float, default=BudgetCaps.seconds); s.add_argument('--out', required=True)
     model_args(s, model=False); s.set_defaults(fn=cmd_recover)
@@ -262,6 +278,16 @@ def parser():
     s = sub.add_parser('dashboard'); s.add_argument('--corpus', required=True); s.add_argument('--attribution', nargs='*')
     s.add_argument('--recovery', nargs='*'); s.add_argument('--out', default='dashboard.html'); s.add_argument('--title')
     s.set_defaults(fn=cmd_dashboard)
+    s = sub.add_parser('evaluate'); s.add_argument('--corpus', required=True); s.add_argument('--split', default='test')
+    s.add_argument('--out', required=True); s.add_argument('--backend', choices=('ollama', 'scripted'), default='ollama')
+    s.add_argument('--cache-dir', help='LLM cache shared with generation (recommended: the generation cache)')
+    s.add_argument('--max-tokens', type=int, default=None); s.add_argument('--token-multiple', type=float, default=2.0)
+    s.add_argument('--max-attempts', type=int, default=BudgetCaps.attempts)
+    s.add_argument('--max-seconds', type=float, default=BudgetCaps.seconds)
+    s.add_argument('--min-confidence', type=float, default=0.0); s.add_argument('--note')
+    s.add_argument('--title', default='AgentReroute benchmark'); model_args(s); s.set_defaults(fn=cmd_evaluate)
+    s = sub.add_parser('robustness'); s.add_argument('--gen', nargs='+', required=True); s.add_argument('--out', required=True)
+    s.set_defaults(fn=cmd_robustness)
     s = sub.add_parser('smoke'); s.add_argument('--out', default='benchmark/runs/smoke'); s.set_defaults(fn=cmd_smoke)
     return p
 

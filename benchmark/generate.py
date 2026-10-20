@@ -24,8 +24,9 @@ from .env.llm import CachedLLM, OllamaClient
 from .env.retail import gold_state_hash
 from .env.scripted import scripted_llm
 from .env.tasks import load_domain
-from .env.workflow import Workflow, outcome
-from .faults.operators import OPERATORS, TIMINGS, build_operator, candidate_sites, pick_site, variants
+from .env.workflow import AGENTS, WORKFLOW_VERSION, Workflow, outcome, system_prompt
+from .faults.operators import (OPERATORS, OPERATORS_VERSION, TIMINGS, build_operator, candidate_sites,
+                               pick_site, variants)
 from .io import append_jsonl, digest, read_json, read_jsonl, write_json
 
 DEFAULTS = {
@@ -115,6 +116,9 @@ def generate(config, out_dir, log=sys.stderr):
         tasks = tasks[:config['max_tasks']]
     identity = {k: config[k] for k in ('backend', 'model', 'temperature', 'seeds', 'max_steps')}
     identity['domain_source'] = domain.source
+    identity['workflow_version'] = WORKFLOW_VERSION
+    identity['operators_version'] = OPERATORS_VERSION
+    identity['prompts_digest'] = digest({a: system_prompt(a, domain.policy) for a in AGENTS})
     meta_path = out_dir / 'generation.json'
     if meta_path.exists() and read_json(meta_path)['identity'] != identity:
         raise ValueError(f'{out_dir} was generated with different settings; use a new output directory')
@@ -157,8 +161,8 @@ def generate(config, out_dir, log=sys.stderr):
                     continue
                 used.add(site['ordinal'])
                 spec = {'name': name, 'ordinal': site['ordinal'], 'params': params}
-                if name == 'policy_contradiction':
-                    spec['site_step'] = site['step_index']
+                if 'target_agent' in site:
+                    spec['target_agent'] = site['target_agent']
                 op = build_operator(spec)
                 eid = episode_id(task['task_id'], seed, op.spec(), timing)
                 if eid in done:

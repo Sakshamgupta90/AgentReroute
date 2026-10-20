@@ -21,8 +21,8 @@ ATTRIBUTION_COLUMNS = [('step_accuracy', 'Step'), ('step_within_1', 'Step ±1'),
                        ('mode_macro_f1', 'Mode macro-F1'), ('step_ece', 'Step ECE')]
 RECOVERY_COLUMNS = [('recovery_rate', 'Recovery'), ('harmful_intervention_rate', 'Harm'),
                     ('false_intervention_rate', 'False intervention'), ('tokens_per_episode', 'Tokens/episode'),
-                    ('tokens_per_recovered', 'Tokens/recovered'), ('attempts_per_episode', 'Attempts'),
-                    ('budget_breaches', 'Budget breaches')]
+                    ('tokens_per_recovered', 'Tokens/recovered'), ('cost_vs_original', 'Cost (× one run)'),
+                    ('attempts_per_episode', 'Attempts'), ('budget_breaches', 'Budget breaches')]
 
 
 def attribution_table(reports):

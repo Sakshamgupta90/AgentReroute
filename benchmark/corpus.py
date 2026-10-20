@@ -26,8 +26,8 @@ from .taxonomy import to_agentrx
 SPLITS = ('train', 'calibration', 'test')
 DEFAULT_RATIOS = {'train': 0.5, 'calibration': 0.2, 'test': 0.3}
 DEFAULT_HELDOUT = ('tool_error[cell=explicit_persistent]', 'stale_output[cell=silent_persistent]',
-                   'drop_context[variant=truncate]', 'misread_value[target=claim]',
-                   'policy_contradiction[directive=skip_verification]')
+                   'drop_context[persistence=persistent,variant=truncate]', 'misread_value[target=claim]',
+                   'policy_contradiction[directive=skip_verification]', 'misroute[persistence=persistent]')
 INCLUDED_STATUSES = ('failed', 'tolerated', 'clean')
 
 

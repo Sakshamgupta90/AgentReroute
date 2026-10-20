@@ -6,6 +6,7 @@ never sent to the model and never part of the cache key; it only helps
 scripted fixtures (and logs) know which agent is speaking.
 """
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -43,18 +44,31 @@ class OllamaClient:
     """Chat completions from a local Ollama server (``/api/chat``)."""
     measurement_kind = 'model'
 
-    def __init__(self, host=DEFAULT_HOST, timeout=300, num_ctx=8192, opener=urllib.request.urlopen):
+    def __init__(self, host=DEFAULT_HOST, timeout=300, num_ctx=8192, opener=urllib.request.urlopen,
+                 retries=4, backoff=10.0, sleep=time.sleep):
         self.host, self.timeout, self.num_ctx, self.opener = host.rstrip('/'), timeout, num_ctx, opener
+        self.retries, self.backoff, self.sleep = retries, backoff, sleep
         self._digests = {}
 
     def _post(self, path, payload):
+        """POST with retries: timeouts, connection errors, 429 and 5xx back off and retry; other 4xx fail."""
         body = json.dumps(payload).encode('utf-8')
-        req = urllib.request.Request(self.host + path, data=body, headers={'Content-Type': 'application/json'})
-        try:
-            with self.opener(req, timeout=self.timeout) as response:
-                return json.loads(response.read().decode('utf-8'))
-        except (urllib.error.URLError, OSError) as exc:
-            raise LLMError(f'Ollama request to {self.host}{path} failed: {exc}') from exc
+        for attempt in range(self.retries + 1):
+            req = urllib.request.Request(self.host + path, data=body, headers={'Content-Type': 'application/json'})
+            try:
+                with self.opener(req, timeout=self.timeout) as response:
+                    return json.loads(response.read().decode('utf-8'))
+            except urllib.error.HTTPError as exc:
+                exc.close()
+                if exc.code != 429 and exc.code < 500:
+                    raise LLMError(f'Ollama request to {self.host}{path} failed: {exc}') from exc
+                error = exc
+            except (urllib.error.URLError, OSError) as exc:
+                error = exc
+            if attempt < self.retries:
+                self.sleep(self.backoff * 3 ** attempt)
+        raise LLMError(f'Ollama request to {self.host}{path} failed after {self.retries + 1} attempts: '
+                       f'{error}') from error
 
     def model_digest(self, model):
         if model not in self._digests:

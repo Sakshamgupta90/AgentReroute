@@ -31,9 +31,17 @@ from .stats import mcnemar, mean, percentile, proportion
 
 @dataclass
 class BudgetCaps:
-    tokens: int = 60000
+    """Per-episode limits. ``tokens=None`` means relative: ``token_multiple`` × the original run's tokens,
+    so one full restart always fits and the cap scales with task length."""
+    tokens: int | None = None
+    token_multiple: float = 2.0
     attempts: int = 3
-    seconds: float = 600.0
+    seconds: float = 900.0
+
+    def for_episode(self, original_tokens):
+        tokens = self.tokens if self.tokens is not None else int(self.token_multiple * max(1000, original_tokens))
+        return BudgetCaps(tokens=tokens, token_multiple=self.token_multiple, attempts=self.attempts,
+                          seconds=self.seconds)
 
 
 class BudgetExceeded(RuntimeError):
@@ -193,14 +201,17 @@ class FixedRules(RecoveryPolicy):
     name = 'fixed_rules'
     RESAMPLE_MODES = ()
 
-    def __init__(self, max_hypotheses=2):
-        self.max_hypotheses = max_hypotheses
+    def __init__(self, max_hypotheses=2, min_confidence=0.0):
+        self.max_hypotheses, self.min_confidence = max_hypotheses, min_confidence
 
     def recover(self, env):
-        if not env.hypotheses:
-            return {'delivered': None, 'status': 'abstained', 'notes': 'no attribution available'}
+        usable = [h for h in env.hypotheses if h.get('confidence', 1.0) >= self.min_confidence]
+        if not usable:
+            return {'delivered': None, 'status': 'abstained',
+                    'notes': 'no attribution above the confidence threshold' if env.hypotheses else
+                             'no attribution available'}
         last = None
-        for h in env.hypotheses[:self.max_hypotheses]:
+        for h in usable[:self.max_hypotheses]:
             if h.get('step_index') is None or h.get('mode') not in MODE_GUIDANCE:
                 continue
             directive = Directive(rollback_step=max(1, h['step_index']), kind='guidance',
@@ -286,7 +297,9 @@ def run_recovery(corpus_dir, split, policy, llm_factory, caps=None, hypotheses=N
         gen_config = read_json(gen_dir / 'generation.json')['config']
         runner = _EpisodeRunner(episode, gen_config, llm_factory)
         hyps = oracle_hypotheses(g) if oracle else (hypotheses or {}).get(tid, [])
-        env = RecoveryEnv(tid, traces[tid], runner.task_view(traces[tid]), runner, caps, hyps)
+        original_tokens = episode['run']['tokens']
+        episode_caps = caps.for_episode(original_tokens)
+        env = RecoveryEnv(tid, traces[tid], runner.task_view(traces[tid]), runner, episode_caps, hyps)
         started = time.perf_counter()
         try:
             decision = policy.recover(env)
@@ -310,7 +323,9 @@ def run_recovery(corpus_dir, split, policy, llm_factory, caps=None, hypotheses=N
                      'decision': decision.get('status'), 'notes': decision.get('notes', ''),
                      'attempts': env.spent['attempts'], 'tokens': env.spent['tokens'],
                      'budget_breach': bool(env._usage.breaches), 'seconds': round(seconds, 3),
-                     'collateral_writes': collateral})
+                     'collateral_writes': collateral, 'original_tokens': original_tokens,
+                     'token_cap': episode_caps.tokens,
+                     'cost_vs_original': round(env.spent['tokens'] / max(1, original_tokens), 4)})
     return summarize(policy.name + (':oracle' if oracle else ''), split, rows, caps)
 
 
@@ -332,6 +347,7 @@ def summarize(name, split, rows, caps):
         'false_intervention_rate': proportion([r['intervened'] for r in controls], len(controls)),
         'collateral_writes_per_episode': mean(r['collateral_writes'] for r in rows),
         'tokens_per_episode': mean(r['tokens'] for r in failed),
+        'cost_vs_original': mean(r['cost_vs_original'] for r in failed),
         'tokens_per_recovered': (sum(r['tokens'] for r in failed) / len(recovered)) if recovered else None,
         'attempts_per_episode': mean(r['attempts'] for r in failed),
         'p95_seconds': percentile([r['seconds'] for r in rows], 0.95),

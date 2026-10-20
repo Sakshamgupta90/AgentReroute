@@ -29,15 +29,26 @@ from .llm import parse_json, request
 from .retail import TOOL_SCHEMAS, WRITE_TOOLS, RetailDB
 
 STOP = '###STOP###'
+# Bump when agent roles, tools or prompt text change: it is part of a generation's settings lock.
+WORKFLOW_VERSION = 2
+
+SPECIALIST_NOTE = ('Division of work: the planner has already authenticated the user and obtained the user\'s '
+                   'explicit confirmation for the request in the handoff, so the policy steps about '
+                   'authenticating and confirming with the user are already satisfied. Do not ask for them again; '
+                   'you cannot talk to the user. If details are missing or ambiguous, or the request belongs to '
+                   'another specialist, reply to the planner saying exactly what is missing or who should handle it.')
 
 AGENTS = {
     'planner': {
         'role': 'You are the planner of a retail customer-service team. You talk to the user, authenticate '
-                'them, obtain explicit confirmation before any database change, and delegate order work to '
-                'specialists. Pass every detail a specialist needs (user id, order id, item ids, payment method, '
-                'the confirmed request) in the handoff, because specialists cannot see this conversation.',
-        'tools': ['find_user_id_by_email', 'find_user_id_by_name_zip', 'get_user_details',
-                  'transfer_to_human_agents'],
+                'them, look up orders and products to work out exactly what they want, obtain explicit '
+                'confirmation before any database change, and delegate the change to a specialist: changes to '
+                'PENDING orders and user addresses go to order_agent, returns and exchanges of DELIVERED orders go '
+                'to returns_agent, catalogue questions go to product_agent. Pass every detail the specialist needs '
+                '(user id, order id, item ids, new item ids, payment method, the confirmed request) in the '
+                'handoff, because specialists cannot see this conversation.',
+        'tools': ['find_user_id_by_email', 'find_user_id_by_name_zip', 'get_user_details', 'get_order_details',
+                  'get_product_details', 'list_all_product_types', 'transfer_to_human_agents'],
         'handoff': ['order_agent', 'product_agent', 'returns_agent'],
     },
     'order_agent': {
@@ -76,7 +87,8 @@ def system_prompt(agent, policy):
     else:
         reply = 'reply to the planner with the result'
     actions.append('{"thought": "...", "action": "reply", "content": "<' + reply + '>"}')
-    parts = [spec['role'], '', '# Policy', policy.strip(), '', '# Tools', json.dumps(tools, indent=1)]
+    role = spec['role'] if 'handoff' in spec else spec['role'] + '\n\n' + SPECIALIST_NOTE
+    parts = [role, '', '# Policy', policy.strip(), '', '# Tools', json.dumps(tools, indent=1)]
     if 'handoff' in spec:
         parts += ['', '# Specialists', 'You can hand off to: ' + ', '.join(spec['handoff']) + '.']
     parts += ['', '# Output format', 'Respond with exactly one JSON object, one of:', *actions,
@@ -175,6 +187,7 @@ class Workflow:
         self.state_version = 0
         self.resampling = False
         self._applied = False
+        self.guided = {}            # agent -> step at which guidance entered its context
         self.prompts = {a: system_prompt(a, domain.policy) for a in AGENTS}
 
     # ------------------------------------------------------------------ bookkeeping
@@ -200,10 +213,11 @@ class Workflow:
             self._applied = True
             if directive.kind == 'guidance':
                 history.append({'role': 'user', 'content': 'SUPERVISOR NOTE: ' + directive.text})
+                self.guided[agent] = index
             elif directive.kind == 'resample':
                 self.resampling = True
         messages = [{'role': 'system', 'content': self.prompts[agent]}] + history
-        ctx = {'agent': agent, 'step_index': index, 'input_digest': digest(messages)}
+        ctx = {'agent': agent, 'step_index': index, 'input_digest': digest(messages), 'guided': dict(self.guided)}
         records = []
         for op in self.faults:
             messages, record = op.on_prompt(ctx, messages)
@@ -260,6 +274,12 @@ class Workflow:
 
     # ------------------------------------------------------------------ specialist conversation
     def _specialist(self, agent, handoff):
+        try:
+            return self._specialist_turns(agent, handoff)
+        finally:
+            self.guided.pop(agent, None)   # its conversation (and any guidance in it) ends here
+
+    def _specialist_turns(self, agent, handoff):
         history = [{'role': 'user', 'content': 'HANDOFF from planner: ' + handoff.get('message', '') +
                     '\nCONTEXT: ' + json.dumps(handoff.get('context', {}), ensure_ascii=False)}]
         invalid = 0
